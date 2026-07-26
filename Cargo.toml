@@ -1,0 +1,65 @@
+[package]
+name = "ets2-spotify-bridge"
+version = "0.2.0"
+edition = "2021"
+description = "App desktop (estilo launcher) que liga o Spotify a ignicao/telemetria do ETS2/ATS, com playlists e hotkeys configuraveis, sem usar credenciais OAuth do Spotify."
+
+[dependencies]
+# Le a telemetria do ETS2/ATS via shared memory exposta pelo plugin da RenCloud
+# (precisa instalar o plugin DLL da RenCloud dentro da pasta plugins do jogo,
+#  ver README.md - "Instalacao").
+# IMPORTANTE: nao usar a versao publicada no crates.io. A 1.1.0 usa APIs
+# nightly-only (`ptr::from_exposed_addr` / `expose_addr` + `#![feature(...)]`)
+# e nao compila em stable, em nenhuma plataforma. O branch master do repo
+# ja trocou isso pras equivalentes estaveis (`ptr::with_exposed_provenance`/
+# `.addr()`), mas ainda nao foi publicado no crates.io (ultima release e a
+# 1.2.0), entao apontamos direto pro git.
+# NOTA: o erro "cannot find `Win32`/`core` in `windows`" que aparecia com a
+# 1.2.0 (e no docs.rs) NAO e um bug da crate - a partir da `windows` 0.60
+# (usada tanto aqui quanto pela 1.2.0/master), os modulos `Win32::*` so
+# existem quando o *target* de compilacao e Windows de verdade. Rodar
+# `cargo build` sem target ou com um target nao-Windows sempre vai falhar
+# nesse ponto (o resto do projeto tambem usa `windows` Win32 diretamente).
+# Build tem que ser feito numa maquina Windows ou cross-compilando pra um
+# target `*-pc-windows-*` (ex.: `cargo build --target x86_64-pc-windows-gnu`
+# ou `-msvc`, com o toolchain correspondente instalado).
+scs-sdk-telemetry = { git = "https://github.com/NightFeather0615/scs-sdk-telemetry", branch = "master" }
+
+# Hotkeys globais (ex: tecla dedicada no volante/teclado) sem precisar
+# que o jogo exponha a tecla pro nosso processo.
+global-hotkey = "0.6"
+
+# Controle de midia (play/pause/next/prev), leitura do "now playing" e capa
+# do album via System Media Transport Controls do Windows - funciona com
+# Spotify Desktop sem OAuth/API key.
+windows = { version = "0.60", features = [
+    "Media_Control",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+] }
+
+# UI desktop (janela nativa, estilo launcher). Usamos eframe::egui em vez
+# de depender de `egui` separadamente, pra garantir que so exista uma
+# versao dele no grafo de dependencias (evita erro de "tipos incompativeis"
+# entre uma egui::Key vinda do eframe e outra vinda de um crate egui solto).
+eframe = "0.29"
+
+# Decodifica a capa do album (JPEG/PNG) recebida via SMTC pra pixels RGBA.
+image = "0.25"
+
+# Persistencia da config (hotkeys + playlists salvas) em JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+
+# Codifica o termo de busca pra URI spotify:search:<termo>.
+urlencoding = "2"
+
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
