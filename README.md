@@ -1,4 +1,4 @@
-# ets2-spotify-bridge
+# ets2-spotify-plugin
 
 App desktop em Rust, no estilo de um launcher (pensa num "Content Manager"
 do Assetto Corsa, só que bem mais simples) para ligar o Spotify ao seu
