@@ -1,5 +1,7 @@
 //! Estado compartilhado entre a thread de "motor" (engine.rs, dona da
-//! conexao com o Spotify/telemetria) e a thread de UI (main.rs).
+//! conexao com o Spotify/telemetria) e o addon do ReShade, que le esse
+//! estado a cada frame via `crate::ffi::ets2_poll_snapshot` (ver
+//! src/ffi.rs).
 
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +19,9 @@ pub struct ThumbnailData {
 pub struct NowPlayingInfo {
     pub title: String,
     pub artist: String,
+    /// Nao exposto no FFI (o painel do addon so mostra titulo/artista) -
+    /// mantido pra uso futuro sem precisar mexer em media.rs de novo.
+    #[allow(dead_code)]
     pub album: String,
     pub thumbnail: Option<ThumbnailData>,
 }
@@ -34,8 +39,14 @@ pub struct UiState {
 
 pub type SharedState = Arc<Mutex<UiState>>;
 
-/// Comandos que a UI (cliques de botao / hotkeys) manda pra thread que
-/// possui a conexao com o Spotify.
+/// Comandos que o addon (cliques no painel / hotkeys dentro do jogo) manda
+/// pra thread que possui a conexao com o Spotify.
+///
+/// `Play`/`Pause` (deterministicos) existem separados de `PlayPause`
+/// (toggle) porque as hotkeys globais (ver overlay_addon.cpp) usam teclas
+/// dedicadas pra cada acao - com um toggle so, apertar a tecla errada
+/// deixaria no estado errado sem o usuario conseguir ver o player pra
+/// perceber e corrigir.
 #[derive(Clone)]
 pub enum Command {
     PlayPause,
@@ -44,5 +55,4 @@ pub enum Command {
     Next,
     Previous,
     PlayUri(String),
-    SearchAndOpen(String),
 }

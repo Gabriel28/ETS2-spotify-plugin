@@ -1,41 +1,32 @@
-//! Configuracao persistida do usuario: hotkeys e playlists salvas.
-//! Fica em `%APPDATA%\ets2-spotify-bridge\config.json` (Windows).
+//! Configuracao persistida do usuario: playlists salvas e dispositivo de
+//! saida de audio preferido do Spotify. Fica em
+//! `%APPDATA%\ets2-spotify-bridge\config.json` (Windows).
+//!
+//! `hotkeys`/`window` (do antigo app desktop) foram removidos na migracao
+//! pro addon do ReShade - ver plano em `.claude/plans` - mas configs
+//! antigas com esses campos ainda carregam normalmente (serde ignora
+//! campos desconhecidos).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct Hotkeys {
-    pub play_pause: String,
-    pub next: String,
-    pub previous: String,
-}
-
-impl Default for Hotkeys {
-    fn default() -> Self {
-        Self {
-            play_pause: "Ctrl+Alt+Space".to_string(),
-            next: "Ctrl+Alt+ArrowRight".to_string(),
-            previous: "Ctrl+Alt+ArrowLeft".to_string(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub struct Playlist {
     pub name: String,
     /// URI no formato `spotify:playlist:<id>` (tambem aceitamos link
-    /// `https://open.spotify.com/playlist/<id>` e convertemos na hora
-    /// de adicionar - ver `normalize_spotify_link` em main.rs).
+    /// `https://open.spotify.com/playlist/<id>` e convertemos na hora de
+    /// adicionar - ver `normalize_spotify_link`).
     pub uri: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Config {
     #[serde(default)]
-    pub hotkeys: Hotkeys,
-    #[serde(default)]
     pub playlists: Vec<Playlist>,
+    /// Id do dispositivo de saida de audio escolhido pra tocar o Spotify
+    /// (ver audio_device.rs). None = usa o dispositivo padrao do Windows.
+    #[serde(default)]
+    pub preferred_output_device: Option<String>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -59,4 +50,23 @@ pub fn save(config: &Config) -> anyhow::Result<()> {
     let json = serde_json::to_string_pretty(config)?;
     std::fs::write(path, json)?;
     Ok(())
+}
+
+/// Aceita tanto um link `https://open.spotify.com/<tipo>/<id>` quanto uma
+/// URI `spotify:...` ja pronta, e devolve sempre no formato URI - o unico
+/// que `media::launch_uri` sabe abrir.
+pub fn normalize_spotify_link(input: &str) -> String {
+    if input.starts_with("spotify:") {
+        return input.to_string();
+    }
+    if let Some(rest) = input.split("open.spotify.com/").nth(1) {
+        let clean = rest.split('?').next().unwrap_or("");
+        let mut parts = clean.split('/');
+        if let (Some(kind), Some(id)) = (parts.next(), parts.next()) {
+            if !kind.is_empty() && !id.is_empty() {
+                return format!("spotify:{kind}:{id}");
+            }
+        }
+    }
+    input.to_string()
 }

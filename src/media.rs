@@ -1,16 +1,20 @@
 //! Controle e leitura do Spotify via System Media Transport Controls (SMTC)
-//! do Windows, mais dois truques que evitam qualquer OAuth/API key:
+//! do Windows, mais um truque que evita qualquer OAuth/API key:
 //!
 //! - **Tocar uma playlist especifica**: o Windows registra o protocolo
 //!   `spotify:` quando o app desktop e instalado. Abrir uma URI como
 //!   `spotify:playlist:37i9dQZF1...` (via `start`, o mesmo mecanismo de
 //!   clicar num link) faz o Spotify abrir/focar e comecar a tocar aquilo.
 //!   Sem login, sem API - e o mesmo que clicar num link de playlist.
-//! - **Buscar**: mesma ideia com `spotify:search:<termo>`, que abre o
-//!   Spotify direto na tela de busca com o termo preenchido.
 //!
 //! Controle fino (play/pause/next/previous) e leitura do "now playing"
 //! (titulo, artista, album, capa) continuam via SMTC, tambem sem OAuth.
+//!
+//! NAO ha busca: o SMTC nao expoe "buscar no catalogo", so controla a
+//! sessao que ja esta ativa. Pra tocar uma musica especifica escolhida na
+//! hora, o jeito e abrir o Spotify normalmente (fora do jogo) e escolher
+//! la - depois disso, play/pause/next/previous aqui dentro do caminhao
+//! continuam controlando o que estiver tocando, seja lá o que for.
 
 use anyhow::{anyhow, Result};
 use windows::Media::Control::{
@@ -83,6 +87,15 @@ impl SpotifyMedia {
         Ok(Some((w, h, img.into_raw())))
     }
 
+    pub fn ensure_running(&self) -> Result<()> {
+        if self.spotify_session()?.is_some() {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "Spotify nao esta aberto; o bridge nao executa o processo do Spotify em segundo plano"
+        ))
+    }
+
     pub fn play_pause(&self) -> Result<()> {
         self.with_session(|s| s.TryTogglePlayPauseAsync()?.get().map_err(Into::into))
     }
@@ -114,11 +127,6 @@ impl SpotifyMedia {
             .args(["/C", "start", "", uri])
             .spawn()?;
         Ok(())
-    }
-
-    pub fn search(&self, query: &str) -> Result<()> {
-        let encoded = urlencoding::encode(query);
-        self.launch_uri(&format!("spotify:search:{encoded}"))
     }
 
     fn with_session<F>(&self, f: F) -> Result<()>

@@ -56,10 +56,10 @@ pub struct GameState {
 }
 
 impl GameTelemetry {
-    pub fn connect() -> Self {
-        Self {
-            mem: SharedMemory::connect(),
-        }
+    pub fn connect() -> Result<Self> {
+        Ok(Self {
+            mem: SharedMemory::connect()?,
+        })
     }
 
     pub fn read_state(&mut self) -> Result<GameState> {

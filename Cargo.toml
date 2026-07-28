@@ -1,8 +1,16 @@
 [package]
 name = "ets2-spotify-bridge"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "App desktop (estilo launcher) que liga o Spotify a ignicao/telemetria do ETS2/ATS, com playlists e hotkeys configuraveis, sem usar credenciais OAuth do Spotify."
+description = "Staticlib linkada no addon do ReShade (reshade-addon/) que liga o Spotify a ignicao/telemetria do ETS2/ATS direto dentro do jogo, sem usar credenciais OAuth do Spotify."
+
+# Staticlib linkada dentro de reshade-addon/overlay_addon.dll pelo
+# reshade-addon/build.bat (cargo build --release --lib, depois linkada via
+# cl.exe /link) - ver src/ffi.rs pra superficie extern "C" chamada pelo addon.
+[lib]
+name = "ets2_spotify_core"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
 
 [dependencies]
 # Le a telemetria do ETS2/ATS via shared memory exposta pelo plugin da RenCloud
@@ -25,13 +33,14 @@ description = "App desktop (estilo launcher) que liga o Spotify a ignicao/teleme
 # ou `-msvc`, com o toolchain correspondente instalado).
 scs-sdk-telemetry = { git = "https://github.com/NightFeather0615/scs-sdk-telemetry", branch = "master" }
 
-# Hotkeys globais (ex: tecla dedicada no volante/teclado) sem precisar
-# que o jogo exponha a tecla pro nosso processo.
-global-hotkey = "0.6"
-
 # Controle de midia (play/pause/next/prev), leitura do "now playing" e capa
 # do album via System Media Transport Controls do Windows - funciona com
 # Spotify Desktop sem OAuth/API key.
+# Precisa ser dependencia direta (alem de `windows`) porque a macro
+# `#[interface(...)]` usada em audio_device.rs gera codigo que referencia
+# `windows_core::...` diretamente.
+windows-core = "0.60"
+
 windows = { version = "0.60", features = [
     "Media_Control",
     "Foundation",
@@ -40,24 +49,27 @@ windows = { version = "0.60", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
     "Win32_System_WinRT",
+    # Troca do dispositivo de saida de audio do Spotify (audio_device.rs).
+    "Win32_Media_Audio",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Ole",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_Security",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
-
-# UI desktop (janela nativa, estilo launcher). Usamos eframe::egui em vez
-# de depender de `egui` separadamente, pra garantir que so exista uma
-# versao dele no grafo de dependencias (evita erro de "tipos incompativeis"
-# entre uma egui::Key vinda do eframe e outra vinda de um crate egui solto).
-eframe = "0.29"
 
 # Decodifica a capa do album (JPEG/PNG) recebida via SMTC pra pixels RGBA.
 image = "0.25"
 
-# Persistencia da config (hotkeys + playlists salvas) em JSON.
+# Persistencia da config (playlists salvas + dispositivo de audio) em JSON.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
-
-# Codifica o termo de busca pra URI spotify:search:<termo>.
-urlencoding = "2"
 
 anyhow = "1"
 

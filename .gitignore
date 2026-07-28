@@ -1,3 +1,12 @@
 /target
 Cargo.lock
 .DS_Store
+
+# Build output do addon do ReShade (reshade-addon/) - gerado por build.bat,
+# nao faz sentido versionar.
+reshade-addon/*.dll
+reshade-addon/*.addon
+reshade-addon/*.obj
+reshade-addon/*.exp
+reshade-addon/*.lib
+reshade-addon/build_log.txt

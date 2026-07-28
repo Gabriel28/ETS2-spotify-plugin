@@ -1,0 +1,17 @@
+{
+  "playlists": [
+    {
+      "name": "Rock de estrada",
+      "uri": "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+    },
+    {
+      "name": "Sertanejo",
+      "uri": "https://open.spotify.com/playlist/37i9dQZF1DX0SM0LYsmbMT"
+    },
+    {
+      "name": "Minha playlist",
+      "uri": "spotify:playlist:SEU_ID_AQUI"
+    }
+  ],
+  "preferred_output_device": null
+}
