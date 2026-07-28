@@ -3,9 +3,10 @@
 //!
 //! - **Tocar uma playlist especifica**: o Windows registra o protocolo
 //!   `spotify:` quando o app desktop e instalado. Abrir uma URI como
-//!   `spotify:playlist:37i9dQZF1...` (via `start`, o mesmo mecanismo de
-//!   clicar num link) faz o Spotify abrir/focar e comecar a tocar aquilo.
-//!   Sem login, sem API - e o mesmo que clicar num link de playlist.
+//!   `spotify:playlist:37i9dQZF1...` (via `ShellExecuteW`, o mesmo
+//!   mecanismo de clicar num link) faz o Spotify abrir/focar e comecar a
+//!   tocar aquilo. Sem login, sem API - e o mesmo que clicar num link de
+//!   playlist.
 //!
 //! Controle fino (play/pause/next/previous) e leitura do "now playing"
 //! (titulo, artista, album, capa) continuam via SMTC, tambem sem OAuth.
@@ -17,11 +18,14 @@
 //! continuam controlando o que estiver tocando, seja lá o que for.
 
 use anyhow::{anyhow, Result};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession as MediaSession,
     GlobalSystemMediaTransportControlsSessionManager as MediaManager,
 };
 use windows::Storage::Streams::DataReader;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 pub struct SpotifyMedia {
     manager: MediaManager,
@@ -87,6 +91,28 @@ impl SpotifyMedia {
         Ok(Some((w, h, img.into_raw())))
     }
 
+    /// Posicao atual e duracao total da faixa (milissegundos), via
+    /// `GetTimelineProperties` do SMTC. `Ok(None)` se nao tiver sessao do
+    /// Spotify ou a sessao nao expuser timeline (nem todo player WinRT
+    /// preenche isso) - tratado como "sem progresso pra mostrar", nao como
+    /// erro fatal, igual `thumbnail_rgba`.
+    pub fn timeline_ms(&self) -> Result<Option<(u32, u32)>> {
+        let Some(session) = self.spotify_session()? else {
+            return Ok(None);
+        };
+        let props = session.GetTimelineProperties()?;
+        let position = props.Position()?.Duration;
+        let end = props.EndTime()?.Duration;
+        if end <= 0 {
+            return Ok(None);
+        }
+        // `TimeSpan::Duration` e em unidades de 100ns (mesma convencao do
+        // .NET/WinRT) - divide por 10_000 pra virar milissegundos.
+        let position_ms = (position.max(0) / 10_000) as u32;
+        let duration_ms = (end / 10_000) as u32;
+        Ok(Some((position_ms, duration_ms)))
+    }
+
     pub fn ensure_running(&self) -> Result<()> {
         if self.spotify_session()?.is_some() {
             return Ok(());
@@ -119,13 +145,23 @@ impl SpotifyMedia {
     /// Abre uma URI `spotify:...` (playlist, album, faixa, busca) usando o
     /// handler de protocolo do proprio Windows/Spotify - sem OAuth.
     pub fn launch_uri(&self, uri: &str) -> Result<()> {
-        // Equivalente a clicar num link spotify:... - o "start" do cmd é
-        // quem sabe abrir URIs de protocolo registradas no Windows. O
-        // primeiro argumento "" depois do start e o titulo da janela
-        // (necessario pra o start nao confundir a URI com o titulo).
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", uri])
-            .spawn()?;
+        // Equivalente a clicar num link spotify:... - via ShellExecuteW
+        // (mesma API que o Explorer usa pra abrir um link/arquivo pelo
+        // handler registrado), NAO via `cmd /C start` (usado antes): o
+        // cmd.exe reinterpreta `&`/`|`/`^` etc. mesmo dentro de argumentos
+        // aspeados, entao uma URI vinda de uma playlist salva maliciosa
+        // (ex. `spotify:playlist:x & calc.exe`) executaria comando
+        // arbitrario. ShellExecuteW nao envolve shell nenhum - so pede ao
+        // Windows pra abrir esse texto com o handler de protocolo dele.
+        let wide = HSTRING::from(uri);
+        let result = unsafe {
+            ShellExecuteW(None, w!("open"), &wide, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+        };
+        // Convencao legada do Win32: retorno > 32 = sucesso; <= 32 = codigo
+        // de erro (ver docs do ShellExecuteW).
+        if (result.0 as isize) <= 32 {
+            return Err(anyhow!("ShellExecuteW falhou (codigo {})", result.0 as isize));
+        }
         Ok(())
     }
 

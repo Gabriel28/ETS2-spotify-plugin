@@ -21,6 +21,7 @@ use std::thread::JoinHandle;
 
 const TITLE_CAP: usize = 128;
 const ARTIST_CAP: usize = 96;
+const STATUS_CAP: usize = 160;
 const PLAYLIST_NAME_CAP: usize = 64;
 const PLAYLIST_URI_CAP: usize = 160;
 const DEVICE_ID_CAP: usize = 128;
@@ -43,6 +44,18 @@ pub struct FfiSnapshot {
     pub thumb_generation: u64,
     pub thumb_width: u32,
     pub thumb_height: u32,
+    /// Mensagem de status de uma linha (login pendente, reconectando, erro
+    /// - ver `state::UiState::status`). So o backend `Connect` preenche
+    /// isso hoje; vazio (`status_len == 0`) = nada pra mostrar.
+    pub status_len: u32,
+    pub status: [u8; STATUS_CAP],
+    /// Volume atual, 0-100 - ver `state::UiState::volume`.
+    pub volume: u32,
+    /// Posicao/duracao da faixa atual em milissegundos - ver
+    /// `state::NowPlayingInfo::position_ms`/`duration_ms`. `duration_ms ==
+    /// 0` = duracao desconhecida (painel nao desenha a barra de progresso).
+    pub position_ms: u32,
+    pub duration_ms: u32,
 }
 
 #[repr(C)]
@@ -88,11 +101,17 @@ pub extern "C" fn ets2_engine_start() -> bool {
     let running = Arc::new(AtomicBool::new(true));
     let (cmd_tx, cmd_rx) = mpsc::channel();
 
+    // Carregada aqui (nao dentro da thread motor) porque o backend
+    // (Smtc/Connect - ver config::Backend) precisa ser decidido antes de
+    // `engine::run` comecar.
+    let cfg = config::load();
+    let backend = cfg.backend;
+
     let thread_state = state.clone();
     let thread_running = running.clone();
     let join = std::thread::Builder::new()
         .name("ets2-spotify-engine".into())
-        .spawn(move || engine::run(thread_state, cmd_rx, thread_running))
+        .spawn(move || engine::run(thread_state, cmd_rx, thread_running, backend))
         .ok();
 
     let _ = ENGINE.set(Engine {
@@ -100,7 +119,7 @@ pub extern "C" fn ets2_engine_start() -> bool {
         cmd_tx,
         running,
         join: Mutex::new(join),
-        config: Mutex::new(config::load()),
+        config: Mutex::new(cfg),
     });
     true
 }
@@ -150,16 +169,24 @@ pub unsafe extern "C" fn ets2_poll_snapshot(out: *mut FfiSnapshot) -> bool {
         thumb_generation: 0,
         thumb_width: 0,
         thumb_height: 0,
+        status_len: 0,
+        status: [0u8; STATUS_CAP],
+        volume: state.volume,
+        position_ms: 0,
+        duration_ms: 0,
     };
     if let Some(np) = &state.now_playing {
         snap.title_len = fill_truncated(&mut snap.title, &np.title) as u32;
         snap.artist_len = fill_truncated(&mut snap.artist, &np.artist) as u32;
+        snap.position_ms = np.position_ms;
+        snap.duration_ms = np.duration_ms;
         if let Some(thumb) = &np.thumbnail {
             snap.thumb_generation = thumb.generation;
             snap.thumb_width = thumb.width;
             snap.thumb_height = thumb.height;
         }
     }
+    snap.status_len = fill_truncated(&mut snap.status, &state.status) as u32;
     std::ptr::write(out, snap);
     true
 }
@@ -225,6 +252,15 @@ pub unsafe extern "C" fn ets2_send_command(kind: u32, text_ptr: *const u8, text_
         _ => return false,
     };
     engine.cmd_tx.send(cmd).is_ok()
+}
+
+/// Define o volume (0-100) - kind numerico separado de `ets2_send_command`
+/// porque o canal de comandos so carrega texto (ver `text_ptr`/`text_len`
+/// acima), nao um inteiro; mesmo padrao ja usado por `ets2_set_output_device`.
+#[no_mangle]
+pub extern "C" fn ets2_set_volume(percent: u32) -> bool {
+    let Some(engine) = ENGINE.get() else { return false };
+    engine.cmd_tx.send(Command::SetVolume(percent.min(100))).is_ok()
 }
 
 /// Copia ate `cap` playlists salvas pro array `out`. `out_count` recebe o

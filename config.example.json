@@ -13,5 +13,6 @@
       "uri": "spotify:playlist:SEU_ID_AQUI"
     }
   ],
-  "preferred_output_device": null
+  "preferred_output_device": null,
+  "backend": "connect"
 }

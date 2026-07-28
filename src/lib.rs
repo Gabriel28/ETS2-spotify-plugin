@@ -14,6 +14,7 @@ mod config;
 mod engine;
 mod ffi;
 mod media;
+mod spotify_connect;
 mod state;
 mod telemetry;
 

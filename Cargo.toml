@@ -2,7 +2,7 @@
 name = "ets2-spotify-bridge"
 version = "0.3.0"
 edition = "2021"
-description = "Staticlib linkada no addon do ReShade (reshade-addon/) que liga o Spotify a ignicao/telemetria do ETS2/ATS direto dentro do jogo, sem usar credenciais OAuth do Spotify."
+description = "Staticlib linkada no addon do ReShade (reshade-addon/) que liga o Spotify a ignicao/telemetria do ETS2/ATS direto dentro do jogo - backend connect (Spotify Connect via librespot, OAuth) ou smtc (Spotify Desktop via SMTC do Windows, sem OAuth)."
 
 # Staticlib linkada dentro de reshade-addon/overlay_addon.dll pelo
 # reshade-addon/build.bat (cargo build --release --lib, depois linkada via
@@ -61,6 +61,9 @@ windows = { version = "0.60", features = [
     "Win32_System_Memory",
     "Win32_Security",
     "Win32_UI_Shell_PropertiesSystem",
+    # ShellExecuteW (media.rs::launch_uri) - abre URIs `spotify:...` via o
+    # handler de protocolo registrado, sem passar por cmd.exe/shell nenhum.
+    "Win32_UI_Shell",
 ] }
 
 # Decodifica a capa do album (JPEG/PNG) recebida via SMTC pra pixels RGBA.
@@ -73,5 +76,40 @@ dirs = "5"
 
 anyhow = "1"
 
+# Backend "connect": o addon age como um dispositivo Spotify Connect de
+# verdade (aparece na lista de dispositivos do app oficial), sem precisar
+# do Spotify Desktop rodando no PC. Login via OAuth (PKCE, abre o navegador
+# uma vez) usando o client_id publico que o proprio librespot ja embute
+# (KEYMASTER_CLIENT_ID, em core/src/config.rs) - nao precisamos registrar
+# nosso proprio app no dashboard da Spotify. Ver src/spotify_connect.rs.
+librespot-core = "0.8"
+librespot-connect = "0.8"
+librespot-oauth = "0.8"
+librespot-metadata = "0.8"
+librespot-playback = { version = "0.8", default-features = false, features = ["rodio-backend"] }
+
+# Runtime async exigido pelo librespot (Session/Spirc rodam sobre tokio).
+# Roda inteiro numa thread OS dedicada (ver spotify_connect.rs) - nao mexe
+# no restante do engine, que continua sincrono/polling.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-util = "0.3"
+
+# So pra baixar a capa do album (CoverImage::url, CDN da Spotify) no
+# backend Connect - ja e uma dependencia transitiva de librespot-oauth
+# (troca de token OAuth), entao declarar aqui nao adiciona compilacao
+# significativa nova, so reusa a mesma versao/features ja resolvidas.
+reqwest = "0.12"
+
 [profile.release]
 opt-level = 2
+
+# Forca a resolucao do Cargo a nao pegar uma versao mais nova/quebrada de
+# `vergen` no build script do librespot-core - mesmo workaround que o
+# proprio librespot aplica no Cargo.toml dele (ainda nao chegou na versao
+# 0.8.0 publicada no crates.io), ver
+# https://github.com/rustyhorde/vergen/issues/478#issuecomment-3769340357.
+# Sem isso, `cargo check`/`build` falha com um erro de trait `Add` nao
+# satisfeito dentro do build.rs do librespot-core (nada a ver com nosso
+# codigo).
+[build-dependencies]
+vergen = "=9.0.6"

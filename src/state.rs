@@ -24,6 +24,14 @@ pub struct NowPlayingInfo {
     #[allow(dead_code)]
     pub album: String,
     pub thumbnail: Option<ThumbnailData>,
+    /// Posicao atual e duracao total da faixa, em milissegundos - ver
+    /// `media::SpotifyMedia::timeline` (backend Smtc, via
+    /// `GetTimelineProperties`) e `spotify_connect` (backend Connect, via
+    /// `AudioItem::duration_ms` + eventos `PlayerEvent::Playing/Paused/
+    /// PositionChanged/Seeked`). `duration_ms == 0` = duracao desconhecida
+    /// (painel nao desenha a barra de progresso nesse caso).
+    pub position_ms: u32,
+    pub duration_ms: u32,
 }
 
 #[derive(Default)]
@@ -35,6 +43,17 @@ pub struct UiState {
     pub game_paused: bool,
     pub telemetry_connected: bool,
     pub log: Vec<String>,
+    /// Mensagem de status de uma linha so, sobrescrita conforme o backend
+    /// ativo (ver config::Backend) muda de fase - hoje so o backend
+    /// `Connect` usa isso (login OAuth pendente, reconectando, erro). Vazio
+    /// = nada pra mostrar. Exposta no painel via FFI (`ets2_poll_snapshot`).
+    pub status: String,
+    /// Volume atual (0-100). Backend Connect: espelha `PlayerEvent::
+    /// VolumeChanged` (convertido da escala interna 0-65535 do librespot).
+    /// Backend Smtc: espelha o volume da sessao de audio do processo do
+    /// Spotify (`audio_device::spotify_session_volume`), independente do
+    /// volume mestre do Windows.
+    pub volume: u32,
 }
 
 pub type SharedState = Arc<Mutex<UiState>>;
@@ -55,4 +74,7 @@ pub enum Command {
     Next,
     Previous,
     PlayUri(String),
+    /// Volume absoluto, 0-100 - convertido pra escala interna de cada
+    /// backend (ver `state::UiState::volume`).
+    SetVolume(u32),
 }

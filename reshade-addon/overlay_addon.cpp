@@ -29,7 +29,10 @@
 #include <imgui.h>
 #include <reshade.hpp>
 
+#include <algorithm>
+#include <cfloat>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 #include <Windows.h>
@@ -145,6 +148,14 @@ void draw_now_playing(const ets2::Snapshot &snap)
 		ImGui::TextUnformatted(title.empty() ? "(sem titulo)" : title.c_str());
 		ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, 1.0f), "%s", artist.c_str());
 	}
+	else if (snap.status_len > 0)
+	{
+		// Backend Connect (ver config::Backend) usa esta linha pra avisar
+		// de login pendente/reconectando/erro antes de ter uma faixa - ver
+		// ffi.rs::ets2_poll_snapshot e spotify_connect.rs::set_status.
+		std::string status(reinterpret_cast<const char *>(snap.status), snap.status_len);
+		ImGui::TextColored(ImVec4(0.85f, 0.7f, 0.3f, 1.0f), "%s", status.c_str());
+	}
 	else
 	{
 		ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.75f, 1.0f), "Spotify parado");
@@ -154,6 +165,48 @@ void draw_now_playing(const ets2::Snapshot &snap)
 		snap.telemetry_connected ? "ok" : "sem conexao");
 	ImGui::TextColored(ImVec4(0.4f, 0.4f, 0.4f, 1.0f), "F9: %s painel", g_panel_expanded ? "recolher" : "expandir");
 	ImGui::EndGroup();
+}
+
+// Barra de progresso da faixa atual (posicao/duracao - ver
+// ets2::Snapshot::position_ms/duration_ms, preenchidos pelos dois backends
+// - GetTimelineProperties no Smtc, eventos do Player no Connect). So
+// desenhada quando a duracao e conhecida; largura sempre igual a do resto
+// do painel (`-FLT_MIN`), entao acompanha o auto-resize da janela.
+void draw_progress(const ets2::Snapshot &snap)
+{
+	if (!snap.has_track || snap.duration_ms == 0)
+		return;
+
+	const float fraction = std::clamp(
+		static_cast<float>(snap.position_ms) / static_cast<float>(snap.duration_ms), 0.0f, 1.0f);
+
+	char overlay[32];
+	std::snprintf(overlay, sizeof(overlay), "%u:%02u / %u:%02u",
+		snap.position_ms / 60000u, (snap.position_ms / 1000u) % 60u,
+		snap.duration_ms / 60000u, (snap.duration_ms / 1000u) % 60u);
+
+	ImGui::Spacing();
+	ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0), overlay);
+}
+
+// Slider de volume (0-100) - so aparece com o painel expandido, igual aos
+// outros controles. `volume_ui` fica sincronizado com `snap.volume` (lido
+// do backend ativo) sempre que o usuario nao estiver arrastando o slider
+// agora (`IsItemActive`), pra nao brigar com o gesto do usuario caso o
+// volume mude por fora (outro app controlando o mesmo dispositivo Connect,
+// por exemplo) no meio do arrasto.
+void draw_volume(const ets2::Snapshot &snap)
+{
+	static int volume_ui = -1;
+	if (volume_ui < 0)
+		volume_ui = static_cast<int>(snap.volume);
+
+	ImGui::SetNextItemWidth(-FLT_MIN);
+	const bool changed = ImGui::SliderInt("##volume", &volume_ui, 0, 100, "Volume %d%%");
+	if (changed)
+		ets2_set_volume(static_cast<uint32_t>(volume_ui));
+	else if (!ImGui::IsItemActive())
+		volume_ui = static_cast<int>(snap.volume);
 }
 
 // Botao so com um icone (glifo ASCII/Latin-1 - o unico intervalo de
@@ -252,11 +305,14 @@ void draw_osd(reshade::api::effect_runtime *runtime)
 	ImGui::Begin("##ets2_spotify_panel", nullptr, flags);
 
 	draw_now_playing(snap);
+	draw_progress(snap);
 
 	if (g_panel_expanded)
 	{
 		ImGui::Separator();
 		draw_controls();
+		ImGui::Spacing();
+		draw_volume(snap);
 		draw_playlists();
 
 		// Enquanto o painel estiver aberto, bloqueia o input do proprio jogo
@@ -274,9 +330,10 @@ void draw_osd(reshade::api::effect_runtime *runtime)
 
 extern "C" __declspec(dllexport) const char *NAME = "ETS2 x Spotify";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-	"Controle o Spotify direto de dentro do caminhao: play/pause, anterior/proxima, playlists "
-	"salvas, capa do album e faixa/artista atuais, com hotkeys globais (Ctrl+PageUp/PageDown/"
-	"Insert/Delete). Nao precisa de nenhum app separado.";
+	"Controle o Spotify direto de dentro do caminhao: play/pause, anterior/proxima, volume, "
+	"progresso da faixa, playlists salvas, capa do album e faixa/artista atuais, com hotkeys "
+	"globais (Ctrl+PageUp/PageDown/Insert/Delete). Backend Connect: nao precisa de nenhum app "
+	"separado, nem do Spotify Desktop aberto.";
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 {

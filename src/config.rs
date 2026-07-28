@@ -19,19 +19,50 @@ pub struct Playlist {
     pub uri: String,
 }
 
+/// Qual mecanismo o engine usa pra falar com o Spotify - ver
+/// `src/media.rs` (Smtc) e `src/spotify_connect.rs` (Connect).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Backend {
+    /// Controla remotamente o Spotify Desktop já aberto via System Media
+    /// Transport Controls do Windows. Sem login/OAuth, mas exige o
+    /// aplicativo do Spotify rodando no mesmo PC.
+    Smtc,
+    /// O addon vira um dispositivo Spotify Connect de verdade (aparece na
+    /// lista de dispositivos do app oficial em qualquer aparelho) e toca o
+    /// áudio ele mesmo, sem precisar do Spotify Desktop aberto. Exige
+    /// login OAuth (abre o navegador uma vez; login fica salvo depois) e
+    /// conta Premium.
+    #[default]
+    Connect,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Config {
     #[serde(default)]
     pub playlists: Vec<Playlist>,
     /// Id do dispositivo de saida de audio escolhido pra tocar o Spotify
     /// (ver audio_device.rs). None = usa o dispositivo padrao do Windows.
+    /// So se aplica ao backend `Smtc` - o backend `Connect` usa a saida de
+    /// audio padrao do Windows (o processo que "toca" e o proprio jogo).
     #[serde(default)]
     pub preferred_output_device: Option<String>,
+    /// Qual backend usar - ver `Backend`. Default `Connect`.
+    #[serde(default)]
+    pub backend: Backend,
 }
 
 pub fn config_path() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
     base.join("ets2-spotify-bridge").join("config.json")
+}
+
+/// Onde o backend `Connect` (ver `spotify_connect.rs`) guarda as
+/// credenciais de login reutilizaveis (cache do librespot), pra so pedir
+/// login OAuth de novo se esse diretorio for apagado.
+pub fn librespot_cache_dir() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(std::env::temp_dir);
+    base.join("ets2-spotify-bridge").join("librespot-cache")
 }
 
 pub fn load() -> Config {

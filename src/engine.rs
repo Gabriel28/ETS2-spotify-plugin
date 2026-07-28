@@ -6,10 +6,22 @@
 //! (musica tocando, eletrica do caminhao, log) num Mutex compartilhado que
 //! o addon le a cada frame via `crate::ffi::ets2_poll_snapshot` - ver
 //! `src/ffi.rs`.
+//!
+//! Backend do Spotify (`config::Backend`): `Smtc` (media.rs) controla um
+//! Spotify Desktop ja aberto, e sua conexao/now-playing sao geridos aqui
+//! mesmo, por polling, dentro deste loop. `Connect` (spotify_connect.rs) e
+//! diferente: o addon VIRA um dispositivo Spotify Connect (sem precisar do
+//! Spotify Desktop), rodando numa thread propria com seu proprio runtime
+//! async - aqui so seguramos o handle e mandamos comandos; now-playing e
+//! status sao escritos direto no `SharedState` por aquele modulo, nao por
+//! este loop.
 
+use crate::config::Backend;
 use crate::media::SpotifyMedia;
+use crate::spotify_connect::SpotifyConnect;
 use crate::state::{Command, NowPlayingInfo, SharedState, ThumbnailData};
 use crate::telemetry::GameTelemetry;
+use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -20,7 +32,67 @@ use std::time::Duration;
 /// reconectar um recurso que esta faltando (Spotify/telemetria). ~2s.
 const RETRY_EVERY_TICKS: u32 = 5;
 
-pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBool>) {
+/// Backend do Spotify ativo - so existe (`Some`) depois de conectado (SMTC)
+/// ou depois de a thread do Connect ter sido criada (o Connect pode
+/// demorar pra ficar "pronto" de verdade - ver `SpotifyConnect::start` -
+/// mas a partir do momento em que a thread sobe ja da pra guardar o
+/// handle; comandos mandados antes do login terminar so falham, mesmo
+/// comportamento de "ainda nao conectado" que o SMTC ja tinha).
+enum MediaBackend {
+    Smtc(SpotifyMedia),
+    Connect(SpotifyConnect),
+}
+
+impl MediaBackend {
+    fn play_pause(&self) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.play_pause(),
+            Self::Connect(c) => c.play_pause(),
+        }
+    }
+    fn play(&self) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.play(),
+            Self::Connect(c) => c.play(),
+        }
+    }
+    fn pause(&self) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.pause(),
+            Self::Connect(c) => c.pause(),
+        }
+    }
+    fn next(&self) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.next(),
+            Self::Connect(c) => c.next(),
+        }
+    }
+    fn previous(&self) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.previous(),
+            Self::Connect(c) => c.previous(),
+        }
+    }
+    fn launch_uri(&self, uri: &str) -> Result<()> {
+        match self {
+            Self::Smtc(m) => m.launch_uri(uri),
+            Self::Connect(c) => c.launch_uri(uri),
+        }
+    }
+    /// `percent` em 0-100. Backend Smtc: volume da sessao de audio do
+    /// processo do Spotify (`audio_device`), independente do volume mestre
+    /// do Windows. Backend Connect: volume do proprio protocolo Spotify
+    /// Connect (`Spirc::set_volume`), sincronizado com outros clientes.
+    fn set_volume(&self, percent: u32) -> Result<()> {
+        match self {
+            Self::Smtc(_) => crate::audio_device::set_spotify_volume(percent.min(100) as f32 / 100.0),
+            Self::Connect(c) => c.set_volume(percent),
+        }
+    }
+}
+
+pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBool>, backend: Backend) {
     crate::init_apartment();
 
     // IMPORTANTE: nem `media` (Spotify/SMTC) nem `telemetry` (jogo) bloqueiam
@@ -29,7 +101,7 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
     // logado, a thread inteira ficava parada esperando e nem a telemetria
     // nem o overlay chegavam a rodar. Agora os dois sao `Option` e cada um
     // tenta (re)conectar sozinho dentro do loop, sem travar o outro.
-    let mut media: Option<SpotifyMedia> = None;
+    let mut media: Option<MediaBackend> = None;
     let mut telemetry: Option<GameTelemetry> = None;
     let mut media_retry_tick: u32 = 0;
     let mut telemetry_retry_tick: u32 = 0;
@@ -41,15 +113,26 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
 
     push_log(&state, "Motor de integracao iniciado.".to_string());
 
+    // O backend `Connect` gerencia login/reconexao sozinho na propria
+    // thread (ver spotify_connect.rs) - so criamos o handle uma vez aqui,
+    // sem entrar no mesmo laço de retry usado pelo SMTC (que precisa
+    // reconectar toda hora porque so funciona enquanto o Spotify Desktop
+    // estiver aberto).
+    if backend == Backend::Connect {
+        let connect = SpotifyConnect::start(state.clone(), crate::config::librespot_cache_dir());
+        media = Some(MediaBackend::Connect(connect));
+    }
+
     while running.load(Ordering::SeqCst) {
         // 0a) (re)conecta o Spotify via SMTC, sem bloquear o resto do loop.
-        if media.is_none() {
+        // So se aplica ao backend Smtc - o Connect ja foi iniciado acima.
+        if backend == Backend::Smtc && media.is_none() {
             if media_retry_tick == 0 {
                 match SpotifyMedia::connect() {
                     Ok(m) => {
                         push_log(&state, "Conectado ao SMTC do Windows.".to_string());
                         let _ = m.ensure_running();
-                        media = Some(m);
+                        media = Some(MediaBackend::Smtc(m));
                         media_wait_logged = false;
                     }
                     Err(e) => {
@@ -89,6 +172,7 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
                 Command::Next => media.next(),
                 Command::Previous => media.previous(),
                 Command::PlayUri(uri) => media.launch_uri(uri),
+                Command::SetVolume(percent) => media.set_volume(*percent),
             };
             if let Err(e) = result {
                 push_log(&state, format!("Erro ao executar comando: {e}"));
@@ -102,12 +186,9 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
         if let Some(tel) = telemetry.as_mut() {
             match tel.read_state() {
                 Ok(gs) => {
-                    let play = |media: &Option<SpotifyMedia>| {
+                    let play = |media: &Option<MediaBackend>| {
                         if let Some(media) = media {
-                            if media.play().is_err() {
-                                let _ = media.ensure_running();
-                                let _ = media.play();
-                            }
+                            let _ = media.play();
                         }
                     };
                     match prev_game_state {
@@ -158,8 +239,13 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
             }
         }
 
-        // 3) now playing + capa (so recarrega a capa quando a faixa muda)
-        if let Some(media) = media.as_ref() {
+        // 3) now playing + capa (so recarrega a capa quando a faixa muda).
+        // So se aplica ao backend Smtc - e por polling porque o SMTC do
+        // Windows nao tem como "avisar" quando a faixa troca. O backend
+        // Connect e orientado a evento e ja escreve `now_playing`/`status`
+        // direto no SharedState sozinho (ver spotify_connect.rs), entao
+        // nao ha nada pra fazer aqui nesse caso.
+        if let Some(MediaBackend::Smtc(media)) = media.as_ref() {
             if let Ok(Some(np)) = media.now_playing() {
                 let key = format!("{}|{}", np.artist, np.title);
                 let mut new_thumb: Option<ThumbnailData> = None;
@@ -175,6 +261,7 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
                         });
                     }
                 }
+                let (position_ms, duration_ms) = media.timeline_ms().ok().flatten().unwrap_or((0, 0));
 
                 if let Ok(mut s) = state.lock() {
                     let prev_thumb = s.now_playing.as_ref().and_then(|n| n.thumbnail.clone());
@@ -183,7 +270,16 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
                         artist: np.artist,
                         album: np.album,
                         thumbnail: new_thumb.or(prev_thumb),
+                        position_ms,
+                        duration_ms,
                     });
+                }
+            }
+            // Volume da sessao de audio do Spotify (independente do now
+            // playing - segue disponivel mesmo sem faixa tocando agora).
+            if let Ok(Some(vol)) = crate::audio_device::get_spotify_volume() {
+                if let Ok(mut s) = state.lock() {
+                    s.volume = (vol.clamp(0.0, 1.0) * 100.0).round() as u32;
                 }
             }
         }
@@ -199,6 +295,10 @@ pub fn run(state: SharedState, cmd_rx: Receiver<Command>, running: Arc<AtomicBoo
     }
 
     push_log(&state, "Motor de integracao encerrado.".to_string());
+    // `media` (SpotifyConnect, se for o backend ativo) e derrubado aqui ao
+    // sair de escopo - seu `Drop` sinaliza a thread do Connect pra parar e
+    // espera ela terminar, mesma disciplina de shutdown que
+    // `ets2_engine_shutdown` (ffi.rs) ja aplica a esta thread motor.
 }
 
 fn push_log(state: &SharedState, line: String) {

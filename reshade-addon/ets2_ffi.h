@@ -16,6 +16,7 @@ namespace ets2
 {
 	constexpr size_t kTitleCap = 128;
 	constexpr size_t kArtistCap = 96;
+	constexpr size_t kStatusCap = 160;
 	constexpr size_t kPlaylistNameCap = 64;
 	constexpr size_t kPlaylistUriCap = 160;
 	constexpr size_t kDeviceIdCap = 128;
@@ -35,6 +36,11 @@ namespace ets2
 		uint64_t thumb_generation;
 		uint32_t thumb_width;
 		uint32_t thumb_height;
+		uint32_t status_len;
+		uint8_t status[kStatusCap];
+		uint32_t volume;
+		uint32_t position_ms;
+		uint32_t duration_ms;
 	};
 
 	struct Playlist
@@ -75,6 +81,7 @@ extern "C"
 	bool ets2_poll_snapshot(ets2::Snapshot *out);
 	bool ets2_get_thumbnail(uint64_t expect_generation, uint8_t *out_buf, size_t buf_cap, size_t *out_len);
 	bool ets2_send_command(uint32_t kind, const uint8_t *text_ptr, size_t text_len);
+	bool ets2_set_volume(uint32_t percent);
 
 	bool ets2_list_playlists(ets2::Playlist *out, size_t cap, size_t *out_count);
 	bool ets2_add_playlist(const uint8_t *name_ptr, size_t name_len, const uint8_t *uri_ptr, size_t uri_len);

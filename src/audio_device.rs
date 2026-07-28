@@ -27,7 +27,8 @@ use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
 use windows::Win32::Media::Audio::{
     eConsole, eMultimedia, eRender, IAudioSessionControl2, IAudioSessionManager2,
-    IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator,
+    DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CLSCTX_ALL, CLSCTX_INPROC_SERVER, STGM_READ,
@@ -146,11 +147,14 @@ unsafe fn friendly_name(device: &IMMDevice) -> Result<String> {
     Ok(s)
 }
 
-/// Acha o PID do processo que hoje esta com uma sessao de audio de saida
-/// aberta com nome de imagem "spotify.exe", olhando as sessoes ativas em
-/// todos os dispositivos de saida (nao so o padrao, caso o usuario ja
-/// tenha redirecionado o Spotify antes).
-pub fn find_spotify_process_id() -> Result<Option<u32>> {
+/// Percorre as sessoes de audio de saida ativas em todos os dispositivos
+/// (nao so o padrao, caso o usuario ja tenha redirecionado o Spotify
+/// antes) e devolve a sessao (`IAudioSessionControl2`) do processo com
+/// nome de imagem "spotify.exe", se houver uma ativa agora. Base de
+/// `find_spotify_process_id` (PID) e das funcoes de volume abaixo
+/// (`ISimpleAudioVolume`, obtida via `.cast()` a partir do mesmo
+/// `IAudioSessionControl2`).
+fn find_spotify_session() -> Result<Option<IAudioSessionControl2>> {
     unsafe {
         let enumerator = device_enumerator()?;
         let collection = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)?;
@@ -181,12 +185,50 @@ pub fn find_spotify_process_id() -> Result<Option<u32>> {
                     continue;
                 }
                 if process_is_spotify(pid) {
-                    return Ok(Some(pid));
+                    return Ok(Some(control2));
                 }
             }
         }
         Ok(None)
     }
+}
+
+/// Acha o PID do processo que hoje esta com uma sessao de audio de saida
+/// aberta com nome de imagem "spotify.exe".
+pub fn find_spotify_process_id() -> Result<Option<u32>> {
+    let Some(session) = find_spotify_session()? else {
+        return Ok(None);
+    };
+    unsafe { Ok(Some(session.GetProcessId()?)) }
+}
+
+/// Le o volume da sessao de audio do Spotify (0.0-1.0), independente do
+/// volume mestre do Windows - mesma coisa que aparece no "Mixer de volume"
+/// pro app Spotify. `Ok(None)` se o Spotify nao estiver com sessao de
+/// audio ativa agora (equivalente a "volume desconhecido", nao um erro).
+pub fn get_spotify_volume() -> Result<Option<f32>> {
+    let Some(session) = find_spotify_session()? else {
+        return Ok(None);
+    };
+    unsafe {
+        let simple: ISimpleAudioVolume = session.cast()?;
+        Ok(Some(simple.GetMasterVolume()?))
+    }
+}
+
+/// Define o volume da sessao de audio do Spotify (0.0-1.0). Precisa que o
+/// Spotify ja esteja com uma sessao de audio ativa (mesma limitacao de
+/// `set_spotify_output_device`).
+pub fn set_spotify_volume(volume: f32) -> Result<()> {
+    let session = find_spotify_session()?
+        .ok_or_else(|| anyhow!("Spotify nao esta com uma sessao de audio ativa agora"))?;
+    unsafe {
+        let simple: ISimpleAudioVolume = session.cast()?;
+        simple
+            .SetMasterVolume(volume.clamp(0.0, 1.0), std::ptr::null())
+            .context("SetMasterVolume falhou")?;
+    }
+    Ok(())
 }
 
 fn process_is_spotify(pid: u32) -> bool {
