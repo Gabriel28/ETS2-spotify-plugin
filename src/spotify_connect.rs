@@ -35,7 +35,7 @@ use librespot_core::cache::Cache;
 use librespot_core::config::{DeviceType, SessionConfig};
 use librespot_core::session::Session;
 use librespot_metadata::audio::UniqueFields;
-use librespot_oauth::OAuthClientBuilder;
+use librespot_oauth::{OAuthClient, OAuthClientBuilder, OAuthToken};
 use librespot_playback::audio_backend;
 use librespot_playback::config::{AudioFormat, PlayerConfig};
 use librespot_playback::mixer::{self, MixerConfig};
@@ -111,6 +111,22 @@ const OAUTH_SCOPES: &[&str] = &[
 /// 8898 colidir com outra coisa nesta maquina, troque o numero aqui.
 const OAUTH_REDIRECT_URI: &str = "http://127.0.0.1:8898/login";
 
+/// Quanto tempo esperamos o usuario terminar o login no navegador antes de
+/// desistir. `OAuthClient::get_access_token` (librespot-oauth) e uma
+/// chamada SINCRONA/bloqueante (usa `TcpListener::incoming().next()` por
+/// baixo, sem timeout nenhum) - sem um limite proprio aqui, se o usuario
+/// nunca completar o login (fechar a aba, demorar, etc.) essa chamada
+/// travaria pra sempre. Ver `login_with_timeout`.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Quanto tempo `SpotifyConnect::drop` espera a thread do backend connect
+/// terminar antes de desistir de esperar (mas SEM matar a thread - so para
+/// de bloquear o encerramento do jogo por causa dela). Rede de seguranca:
+/// mesmo que algum caminho de rede/IO dentro do librespot trave sem
+/// timeout (algo que a gente nao previu), o jogo ainda assim consegue
+/// fechar - ver `Drop for SpotifyConnect`.
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub struct SpotifyConnect {
     spirc: Arc<Mutex<Option<Spirc>>>,
     shutdown: Arc<tokio::sync::Notify>,
@@ -141,8 +157,21 @@ impl SpotifyConnect {
                     }
                 };
                 runtime.block_on(async move {
-                    match run_session(state.clone(), cache_dir).await {
-                        Ok((spirc, spirc_task)) => {
+                    // Todo o processo de login/conexao roda dentro desse
+                    // `select!` contra o sinal de shutdown - sem isso, se o
+                    // usuario tentar fechar o jogo enquanto ainda estamos
+                    // conectando/logando, nao haveria como abortar e essa
+                    // chamada (e o `.join()` em `Drop`) ficaria esperando o
+                    // login terminar sozinho. Ver `SHUTDOWN_JOIN_TIMEOUT`
+                    // pra rede de seguranca adicional caso mesmo assim algo
+                    // trave aqui dentro.
+                    let session_result = tokio::select! {
+                        biased;
+                        _ = shutdown_for_thread.notified() => None,
+                        res = run_session(state.clone(), cache_dir, shutdown_for_thread.clone()) => Some(res),
+                    };
+                    match session_result {
+                        Some(Ok((spirc, spirc_task))) => {
                             *slot.lock().unwrap() = Some(spirc);
                             tokio::select! {
                                 _ = spirc_task => {}
@@ -152,7 +181,11 @@ impl SpotifyConnect {
                                 let _ = spirc.shutdown();
                             }
                         }
-                        Err(e) => set_status(&state, format!("Erro no Spotify Connect: {e:#}")),
+                        Some(Err(e)) => set_status(&state, format!("Erro no Spotify Connect: {e:#}")),
+                        // Shutdown pedido antes de terminar de conectar -
+                        // nada pra desfazer (Spirc/Player nunca chegaram a
+                        // existir), so encerra.
+                        None => {}
                     }
                 });
             })
@@ -225,8 +258,34 @@ impl SpotifyConnect {
 impl Drop for SpotifyConnect {
     fn drop(&mut self) {
         self.shutdown.notify_one();
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+        let Some(join) = self.join.take() else { return };
+
+        // Join com timeout: mesmo que a thread do backend connect nao
+        // termine a tempo (ex.: um caminho de rede/IO dentro do librespot
+        // que a gente nao previu e que trava sem timeout proprio, igual o
+        // bug que `login_with_timeout` corrige pro caso conhecido), isso
+        // NAO deve travar o fechamento do jogo por causa disso - so paramos
+        // de esperar e deixamos essa thread terminar sozinha em segundo
+        // plano (o processo inteiro sendo encerrado limpa tudo de qualquer
+        // jeito). `JoinHandle::join` do std nao tem timeout embutido, entao
+        // fazemos isso com uma thread auxiliar + canal.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::Builder::new()
+            .name("ets2-spotify-connect-join-waiter".into())
+            .spawn(move || {
+                let _ = join.join();
+                let _ = tx.send(());
+            });
+        if let Ok(waiter) = waiter {
+            if rx.recv_timeout(SHUTDOWN_JOIN_TIMEOUT).is_err() {
+                // Timeout - segue em frente. A thread auxiliar continua
+                // esperando o join original terminar sozinha; nao a
+                // detach()amos porque join() de uma JoinHandle ja
+                // consumida so pode ser feito uma vez, e isso e exatamente
+                // o que ela esta fazendo, so que sem mais ninguem esperar
+                // por ela.
+                drop(waiter);
+            }
         }
     }
 }
@@ -238,6 +297,7 @@ impl Drop for SpotifyConnect {
 async fn run_session(
     state: SharedState,
     cache_dir: PathBuf,
+    shutdown: Arc<tokio::sync::Notify>,
 ) -> Result<(Spirc, impl std::future::Future<Output = ()>)> {
     std::fs::create_dir_all(&cache_dir)
         .with_context(|| format!("nao foi possivel criar {}", cache_dir.display()))?;
@@ -264,9 +324,7 @@ async fn run_session(
             .open_in_browser()
             .build()
             .context("nao foi possivel preparar o login OAuth")?;
-            let token = client
-                .get_access_token()
-                .context("login OAuth falhou ou foi cancelado")?;
+            let token = login_with_timeout(client, &shutdown).await?;
             Credentials::with_access_token(token.access_token)
         }
     };
@@ -324,6 +382,48 @@ async fn run_session(
     }
 
     Ok((spirc, spirc_task))
+}
+
+/// Espera o usuario terminar o login no navegador, sem travar a thread do
+/// tokio indefinidamente se ele nunca terminar.
+///
+/// `client.get_access_token()` (librespot-oauth) e sincrona/bloqueante -
+/// por baixo, espera uma conexao TCP chegar (`TcpListener::incoming()`)
+/// sem NENHUM timeout proprio nem forma de ser cancelada de fora. Chamar
+/// isso direto dentro de uma `async fn` prenderia a thread do runtime
+/// tokio pra sempre caso o usuario feche o navegador sem logar, o que por
+/// sua vez travaria o shutdown do addon (e o fechamento do jogo) esperando
+/// essa thread terminar.
+///
+/// A solucao: rodar a chamada bloqueante numa thread `std` comum,
+/// deliberadamente solta (nao rastreada por nenhum `JoinHandle` nosso) -
+/// se o timeout ou o shutdown vencerem a corrida primeiro, essa thread
+/// continua bloqueada em segundo plano ate o processo inteiro terminar
+/// (que e quando o Windows recupera tudo de qualquer forma), mas isso NAO
+/// impede o resto do addon/jogo de fechar normalmente, porque nada mais
+/// espera por ela.
+async fn login_with_timeout(client: OAuthClient, shutdown: &tokio::sync::Notify) -> Result<OAuthToken> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("ets2-spotify-oauth-login".into())
+        .spawn(move || {
+            // Erro ignorado de proposito: se ninguem esta mais esperando
+            // (timeout/shutdown ja venceram a corrida), o receiver foi
+            // dropado e o send simplesmente falha - nao ha nada a fazer.
+            let _ = tx.send(client.get_access_token());
+        })
+        .context("nao foi possivel criar a thread de login OAuth")?;
+
+    tokio::select! {
+        biased;
+        _ = shutdown.notified() => Err(anyhow!("login cancelado (jogo fechando)")),
+        _ = tokio::time::sleep(LOGIN_TIMEOUT) => Err(anyhow!(
+            "tempo esgotado esperando o login no navegador ({}s)", LOGIN_TIMEOUT.as_secs()
+        )),
+        result = rx => result
+            .context("canal de login OAuth fechado inesperadamente")?
+            .context("login OAuth falhou ou foi cancelado"),
+    }
 }
 
 /// Consome os eventos do `Player` (faixa trocou, tocando, pausado, parado,

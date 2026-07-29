@@ -84,6 +84,13 @@ if %EXIT_CODE% neq 0 (
 	echo Build falhou.
 	exit /b %EXIT_CODE%
 )
+
+REM O ReShade so carrega addons com extensao ".addon" - gera esse arquivo
+REM direto aqui (copia do .dll) pra nao precisar renomear manualmente toda
+REM vez depois de recompilar. O .dll continua existindo tambem (util pra
+REM inspecionar/depurar com ferramentas que esperam ".dll").
+copy /y overlay_addon.dll overlay_addon.addon >nul
+
 echo.
-echo Build ok: overlay_addon.dll
-echo Renomeie para overlay_addon.addon e copie pra pasta de addons do ReShade dentro do jogo.
+echo Build ok: overlay_addon.dll / overlay_addon.addon
+echo Copie overlay_addon.addon pra pasta de addons do ReShade dentro do jogo.

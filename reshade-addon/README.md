@@ -46,30 +46,33 @@ dele.
 
 Primeiro compila a staticlib Rust (`cargo build --release --lib`, gera
 `..\target\release\ets2_spotify_core.lib`), depois compila e linka
-`overlay_addon.cpp` junto com essa lib numa DLL só:
-`overlay_addon.dll`. O script acha o Visual Studio automaticamente (via
-`vswhere`, com fallback pras instalações padrão do VS 2022); se falhar,
-abra um "Developer Command Prompt for VS" e rode o `cl.exe` manualmente com
-os mesmos parâmetros do `build.bat` (depois de rodar `cargo build --release
+`overlay_addon.cpp` junto com essa lib numa DLL só (`overlay_addon.dll`) e
+copia pra `overlay_addon.addon` — o ReShade só carrega addons com essa
+extensão, então o `.addon` já sai pronto pra copiar, sem precisar renomear
+nada na mão. O script acha o Visual Studio automaticamente (via `vswhere`,
+com fallback pras instalações padrão do VS 2022); se falhar, abra um
+"Developer Command Prompt for VS" e rode o `cl.exe` manualmente com os
+mesmos parâmetros do `build.bat` (depois de rodar `cargo build --release
 --lib` na raiz do projeto).
 
 ## Instalar
 
-1. Renomeie `overlay_addon.dll` para `overlay_addon.addon`.
-2. Copie pra pasta de addons do ReShade — por padrão é a mesma pasta onde o
+1. Copie `overlay_addon.addon` pra pasta de addons do ReShade — por padrão é a mesma pasta onde o
    `ReShade64.dll` foi instalado, ex.:
    ```
    <pasta do jogo>\bin\win_x64\
    ```
    (o instalador do ReShade também oferece configurar uma pasta de addons
    separada; se você escolheu isso, use a que você configurou).
-3. Abra o Spotify, abra o jogo. Aperte **Home** pra abrir o menu do ReShade
-   uma vez (só pra confirmar que carregou o addon — aparece na aba
-   "Add-ons" com o nome "ETS2 x Spotify"). O HUD compacto aparece sozinho;
-   aperte **F9** dentro do jogo pra abrir o painel completo (play/pause,
-   anterior/próxima, playlists). As hotkeys globais (Ctrl+PageUp/PageDown/
-   Insert/Delete) funcionam com o painel aberto ou fechado — ver
-   [README.md da raiz](../README.md#hotkeys).
+2. Abra o jogo (backend `connect`, o padrão — não precisa do Spotify
+   Desktop aberto) ou abra o Spotify e o jogo (backend `smtc` — ver
+   [README.md da raiz](../README.md#como-funciona)). Aperte **Home** pra
+   abrir o menu do ReShade uma vez (só pra confirmar que carregou o addon —
+   aparece na aba "Add-ons" com o nome "ETS2 x Spotify"). O HUD compacto
+   aparece sozinho; aperte **F9** dentro do jogo pra abrir o painel
+   completo (play/pause, anterior/próxima, volume, playlists). As hotkeys
+   globais (Ctrl+PageUp/PageDown/Insert/Delete) funcionam com o painel
+   aberto ou fechado — ver [README.md da raiz](../README.md#hotkeys).
 
 ## Superfície FFI (`ets2_ffi.h` / `../src/ffi.rs`)
 

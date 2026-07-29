@@ -55,9 +55,9 @@ Detalhes de cada backend em [`docs/backends.md`](docs/backends.md).
    para `<jogo>\bin\win_x64\plugins\`.
 3. Compile: `cd reshade-addon && .\build.bat` (precisa de
    [Rust](https://rustup.rs) + Visual Studio com "Desktop development with
-   C++"). Gera `overlay_addon.dll`.
-4. Renomeie pra `overlay_addon.addon` e copie pra pasta do ReShade no jogo
-   (a mesma do `ReShade64.dll`).
+   C++"). Gera `overlay_addon.addon` já no formato certo.
+4. Copie `overlay_addon.addon` pra pasta do ReShade no jogo (a mesma do
+   `ReShade64.dll`).
 5. Abra o jogo. Aperte **Home** uma vez pra confirmar que o addon carregou
    (aba "Add-ons" → "ETS2 x Spotify"). No backend `connect`, o navegador
    abre pra você logar na primeira vez.
