@@ -17,7 +17,6 @@ use crate::state::{Command, SharedState, UiState};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread::JoinHandle;
 
 const TITLE_CAP: usize = 128;
 const ARTIST_CAP: usize = 96;
@@ -78,7 +77,6 @@ struct Engine {
     state: SharedState,
     cmd_tx: Sender<Command>,
     running: Arc<AtomicBool>,
-    join: Mutex<Option<JoinHandle<()>>>,
     config: Mutex<Config>,
 }
 
@@ -109,37 +107,50 @@ pub extern "C" fn ets2_engine_start() -> bool {
 
     let thread_state = state.clone();
     let thread_running = running.clone();
-    let join = std::thread::Builder::new()
+    // O `JoinHandle` e descartado de proposito (thread "solta") - ninguem
+    // mais da `join()` nela (ver `ets2_engine_shutdown` acima pro motivo:
+    // esperar essa thread de dentro do `DllMain` e o que causava o jogo
+    // travar ao fechar). Ela termina sozinha, no proprio tempo dela,
+    // quando nota `running == false`.
+    let _ = std::thread::Builder::new()
         .name("ets2-spotify-engine".into())
-        .spawn(move || engine::run(thread_state, cmd_rx, thread_running, backend))
-        .ok();
+        .spawn(move || engine::run(thread_state, cmd_rx, thread_running, backend));
 
     let _ = ENGINE.set(Engine {
         state,
         cmd_tx,
         running,
-        join: Mutex::new(join),
         config: Mutex::new(cfg),
     });
     true
 }
 
-/// Sinaliza a thread motor pra parar e espera ela terminar. Chamado do
-/// `DLL_PROCESS_DETACH` do addon - o ReShade pode descarregar o addon com
-/// o jogo ainda aberto (ex.: desabilitado pelo menu), diferente do antigo
-/// bridge (processo separado, que so morria junto do proprio processo).
-/// `engine::run` faz `sleep(400ms)` entre cada checagem de `running`,
-/// entao o join aqui volta rapido (nao ha WinRT bloqueante segurando isso
-/// por muito tempo).
+/// Sinaliza a thread motor pra parar - so isso, NAO espera ela terminar.
+/// Chamado do `DLL_PROCESS_DETACH` do addon C++ (ver overlay_addon.cpp).
+///
+/// IMPORTANTE: propositalmente nao-bloqueante. `DllMain` roda com o
+/// loader lock do processo preso durante TODO o `DLL_PROCESS_DETACH` -
+/// chamar qualquer coisa que espere outra thread terminar (`join`,
+/// `WaitForSingleObject`) ou que crie uma thread nova aqui dentro e
+/// perigoso o suficiente pra a propria Microsoft desaconselhar
+/// explicitamente: se a thread motor (ou o backend Connect dentro dela -
+/// ver spotify_connect.rs, que faz rede via reqwest/hyper/tokio) precisar
+/// do loader lock por baixo dos panos nesse meio tempo (resolucao de DNS,
+/// TLS/schannel, qualquer carregamento "lazy" de DLL do Windows - coisas
+/// que acontecem o tempo todo em codigo de rede), o resultado e um
+/// deadlock classico entre essa chamada e aquela thread. Foi exatamente
+/// isso que travava o jogo ao fechar (so morria via kill forcado pela
+/// Steam) numa versao anterior deste arquivo, que dava `join()` aqui.
+///
+/// A thread motor (e o backend Connect) ainda terminam sozinhas - `engine::run`
+/// nota `running == false` em ate 400ms e a partir dai cada recurso
+/// (SpotifyConnect, telemetria, etc.) se desliga no proprio tempo dele,
+/// so que agora de forma inteiramente assincrona, sem ninguem parado
+/// esperando por isso.
 #[no_mangle]
 pub extern "C" fn ets2_engine_shutdown() {
     let Some(engine) = ENGINE.get() else { return };
     engine.running.store(false, Ordering::SeqCst);
-    if let Ok(mut guard) = engine.join.lock() {
-        if let Some(handle) = guard.take() {
-            let _ = handle.join();
-        }
-    }
 }
 
 /// Copia o estado atual (musica tocando, eletrica, telemetria) pro

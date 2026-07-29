@@ -348,10 +348,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 		reshade::register_overlay("OSD", &draw_osd);
 		break;
 	case DLL_PROCESS_DETACH:
-		// Sinaliza a thread motor (Rust) pra parar e espera ela terminar -
-		// o ReShade pode descarregar o addon com o jogo ainda aberto (ex.:
-		// desabilitado pelo menu), entao isso precisa acontecer aqui e nao
-		// so confiar no processo do jogo morrer.
+		// So SINALIZA a thread motor pra parar - `ets2_engine_shutdown`
+		// (ffi.rs) e deliberadamente nao-bloqueante, nao da join/espera em
+		// nenhuma thread daqui. DllMain roda com o loader lock do processo
+		// preso durante TODO o DLL_PROCESS_DETACH; esperar (ou pior, criar)
+		// qualquer thread de fundo aqui dentro arrisca deadlock se ela
+		// precisar do loader lock por baixo dos panos (rede via
+		// reqwest/hyper/tokio no backend Connect faz isso o tempo todo:
+		// resolucao de DNS, TLS/schannel, etc.) - foi exatamente isso que
+		// travava o jogo ao fechar (so morria via kill forcado pela Steam).
+		// A thread motor (e o backend Connect dentro dela) terminam
+		// sozinhas, de forma inteiramente assincrona - ver o comentario em
+		// `ets2_engine_shutdown`.
 		if (g_engine_started)
 			ets2_engine_shutdown();
 		// NOTA: a textura da capa (g_art_resource/g_art_view) nao e
