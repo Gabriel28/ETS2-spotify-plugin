@@ -108,25 +108,9 @@ Editar exige fechar/abrir o jogo (config é lida uma vez, na inicialização).
 Sem formulário no painel ainda pra adicionar playlist — é editar o arquivo
 à mão mesmo.
 
-## Contribuindo
-
-PRs e issues são bem-vindos. Pontos de entrada úteis:
-
-- **`src/`** — staticlib Rust com toda a lógica (linkada dentro do addon).
-  `engine.rs` é a thread única que fala com telemetria/SMTC; `spotify_connect.rs`
-  é o backend Connect (roda numa thread própria com seu runtime async);
-  `ffi.rs` é a fronteira `extern "C"` com o C++.
-- **`reshade-addon/`** — addon C++/ImGui. Só cuida de UI e do que só o
-  ReShade expõe; toda integração real vive na staticlib acima.
-- **Build de desenvolvimento**: `cargo check` na raiz valida só o lado
-  Rust (mais rápido, não precisa do MSVC/VS instalado). `reshade-addon\build.bat`
-  builda tudo (Rust + C++ + link).
-- O código é bem comentado explicando o *porquê* das decisões não-óbvias
-  (workarounds de API, limitações do SMTC/Connect etc.) — mantenha esse
-  padrão em contribuições.
-- Sem CI/testes automatizados ainda; teste manualmente no jogo antes de
-  abrir PR.
-
+# Contribuições
+São muito bem vindas. ## Em construção;
+  
 ## Licença
 
 [MIT](LICENSE)
