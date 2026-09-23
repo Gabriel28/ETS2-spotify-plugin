@@ -70,6 +70,16 @@ Detalhes de cada backend em [`docs/backends.md`](docs/backends.md).
   o teclado enquanto aberto (não mexe no volante/câmera).
 - Elétrica do caminhão liga/pausa o Spotify automaticamente.
 
+### Exemplo visual
+
+A imagem abaixo mostra como o painel aparece dentro do jogo:
+
+![Exemplo do addon no jogo](docs/exemplo.png)
+
+![Exemplo do addon no jogo](docs/player.png)
+
+![Exemplo do addon no jogo](docs/player_expand.png)
+
 ### Hotkeys
 
 | Ação | Tecla |
