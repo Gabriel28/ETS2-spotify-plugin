@@ -10,6 +10,7 @@
 //! Ver `src/ffi.rs` pra superficie `extern "C"` chamada pelo C++.
 
 mod audio_device;
+mod audio_sink;
 mod config;
 mod engine;
 mod ffi;

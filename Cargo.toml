@@ -87,6 +87,11 @@ librespot-connect = "0.8"
 librespot-oauth = "0.8"
 librespot-metadata = "0.8"
 librespot-playback = { version = "0.8", default-features = false, features = ["rodio-backend"] }
+# Usado direto pelo sink proprio (src/audio_sink.rs), que substitui o sink
+# rodio do librespot (trava o Player se o stream de audio morrer - issue
+# #1). Mesma versao/features que o librespot-playback ja puxa, entao nao
+# adiciona compilacao nova.
+rodio = { version = "0.21", default-features = false, features = ["playback"] }
 
 # Runtime async exigido pelo librespot (Session/Spirc rodam sobre tokio).
 # Roda inteiro numa thread OS dedicada (ver spotify_connect.rs) - nao mexe

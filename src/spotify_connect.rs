@@ -36,8 +36,7 @@ use librespot_core::config::{DeviceType, SessionConfig};
 use librespot_core::session::Session;
 use librespot_metadata::audio::UniqueFields;
 use librespot_oauth::{OAuthClient, OAuthClientBuilder, OAuthToken};
-use librespot_playback::audio_backend;
-use librespot_playback::config::{AudioFormat, PlayerConfig};
+use librespot_playback::config::PlayerConfig;
 use librespot_playback::mixer::{self, MixerConfig};
 use librespot_playback::player::{Player, PlayerEvent, PlayerEventChannel};
 use std::path::PathBuf;
@@ -338,16 +337,17 @@ async fn run_session(
     // barra de progresso do painel precisa pra andar (ver
     // `spawn_player_event_task`).
     player_config.position_update_interval = Some(POSITION_UPDATE_INTERVAL);
-    let backend = audio_backend::find(None)
-        .ok_or_else(|| anyhow!("nenhum backend de audio disponivel (rodio-backend)"))?;
     let mixer_fn =
         mixer::find(None).ok_or_else(|| anyhow!("nenhum mixer de audio disponivel"))?;
     let mixer = mixer_fn(MixerConfig::default()).context("nao foi possivel abrir o mixer")?;
     let volume_getter = mixer.get_soft_volume();
     let initial_volume_percent = ConnectConfig::default().initial_volume as u32 * 100 / VOLUME_MAX;
 
+    // Sink proprio (audio_sink.rs) em vez do `audio_backend::rodio` do
+    // librespot: o original trava a thread do Player pra sempre se o stream
+    // de audio morrer (dispositivo invalidado/trocado) - issue #1.
     let player = Player::new(player_config, session.clone(), volume_getter, move || {
-        backend(None, AudioFormat::default())
+        Box::new(crate::audio_sink::ResilientSink::new())
     });
 
     spawn_player_event_task(state.clone(), player.get_player_event_channel());
